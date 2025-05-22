@@ -1,21 +1,17 @@
-import {
-  AngularNodeAppEngine,
-  createNodeRequestHandler,
-  isMainModule,
-  writeResponseToNodeResponse,
-} from '@angular/ssr/node';
+import { APP_BASE_HREF } from '@angular/common';
+import { CommonEngine, isMainModule } from '@angular/ssr/node';
 import express from 'express';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getContext } from '@netlify/angular-runtime/context.mjs';
-import { AngularAppEngine, createRequestHandler } from '@angular/ssr';
+import bootstrap from './main.server';
+import { render } from '@netlify/angular-runtime/common-engine.mjs';
 
-const angularAppEngine = new AngularAppEngine();
-export async function netlifyAppEngineHandler(
-  request: Request
+const commonEngine = new CommonEngine();
+
+export async function netlifyCommonEngineHandler(
+  request: Request,
+  context: any
 ): Promise<Response> {
-  const context = getContext();
-
   // Example API endpoints can be defined here.
   // Uncomment and define endpoints as necessary.
   // const pathname = new URL(request.url).pathname;
@@ -23,15 +19,13 @@ export async function netlifyAppEngineHandler(
   //   return Response.json({ message: 'Hello from the API' });
   // }
 
-  const result = await angularAppEngine.handle(request, context);
-  return result || new Response('Not found', { status: 404 });
+  return await render(commonEngine);
 }
-// export const reqHandler = createRequestHandler(netlifyAppEngineHandler)
 const serverDistFolder = dirname(fileURLToPath(import.meta.url));
 const browserDistFolder = resolve(serverDistFolder, '../browser');
+const indexHtml = join(serverDistFolder, 'index.server.html');
 
 const app = express();
-const angularApp = new AngularNodeAppEngine();
 
 /**
  * Example Express Rest API endpoints can be defined here.
@@ -48,24 +42,30 @@ const angularApp = new AngularNodeAppEngine();
 /**
  * Serve static files from /browser
  */
-app.use(
+app.get(
+  '**',
   express.static(browserDistFolder, {
     maxAge: '1y',
-    index: false,
-    redirect: false,
+    index: 'index.html',
   })
 );
 
 /**
  * Handle all other requests by rendering the Angular application.
  */
-app.use('/**', (req, res, next) => {
-  angularApp
-    .handle(req)
-    .then((response) =>
-      response ? writeResponseToNodeResponse(response, res) : next()
-    )
-    .catch(next);
+app.get('**', (req, res, next) => {
+  const { protocol, originalUrl, baseUrl, headers } = req;
+
+  commonEngine
+    .render({
+      bootstrap,
+      documentFilePath: indexHtml,
+      url: `${protocol}://${headers.host}${originalUrl}`,
+      publicPath: browserDistFolder,
+      providers: [{ provide: APP_BASE_HREF, useValue: baseUrl }],
+    })
+    .then((html) => res.send(html))
+    .catch((err) => next(err));
 });
 
 /**
@@ -79,8 +79,4 @@ if (isMainModule(import.meta.url)) {
   });
 }
 
-/**
- * Request handler used by the Angular CLI (for dev-server and during build) or Firebase Cloud Functions.
- */
-export const reqHandler = createNodeRequestHandler(app);
-export const reqHandler2 = createRequestHandler(netlifyAppEngineHandler);
+export default app;
